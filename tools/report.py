@@ -4,7 +4,11 @@ import sys
 import util
 
 wfilename = sys.argv[1]
-data, framerate = util.getwavedata(wfilename)
+data = util.gettimeseries(wfilename)
 
-print util.nearestnote(util.guessfundamental(data, framerate))
+freq0 = util.getfundamental(data)
+print freq0
+print util.tocents(freq0)
+print util.Aspectrum(freq0, data)
+
 
