@@ -14,6 +14,8 @@ class TimeSeries(list):
 	def points(self):
 		for k, x in enumerate(self):
 			yield k / self.fsample, x
+	def duration(self):
+		return len(self) / self.fsample
 	def nyquist(self):
 		return 0.5 * self.fsample
 
@@ -57,15 +59,19 @@ def guessfundamental(data):
 	fft = realfft(data)
 	return max([(p, freq) for freq, p in fft])[1]
 
+def fitfrequency(freq0, data, searchwidth=0.1):
+	bounds = [(freq0 * math.exp(-searchwidth), freq0 * math.exp(searchwidth))]
+	def gdg(args):
+		freq, = args
+		A, dA = AdA(freq, data)
+		return -A, numpy.array([-dA])
+	result = scipy.optimize.minimize(gdg, [freq0], method="L-BFGS-B", jac=True)
+	return result.x[0]
+
 def getfundamental(data):
 	"""Find the local maximum of the frequency that fits the waveform best."""
 	freq0 = guessfundamental(data)
-	def g(args):
-		freq, = args
-		A, _ = Aphi(freq, data)
-		return -A
-	result = scipy.optimize.minimize(g, [freq0])
-	return result.x[0]
+	return fitfrequency(freq0, data)
 
 def tocents(freq):
 	"""Number of cents relative to middle C."""
@@ -84,6 +90,46 @@ def Aphi(freq, data):
 	total = sum(a * cmath.exp(omega * t) for t, a in data.points())
 	A, phi = cmath.polar(total)
 	return A * 2 / len(data), phi
+
+def AdA(freq, data):
+	"""Returns amplitude A and dA/df."""
+	omega = -1j * tau * freq
+	total, dtotal = 0, 0
+	for t, a in data.points():
+		z = a * cmath.exp(omega * t)
+		total += z
+		dtotal += z * t
+	total *= 2 / len(data)
+	dtotal *= (2 / len(data)) * (-1j * tau)
+	A = abs(total)
+	dA = (total.real * dtotal.real + total.imag * dtotal.imag) / A
+	return A, dA
+
+def Hannwindow(width, fsample):
+	n = int(round(width * fsample))
+	return [(1 - math.cos(tau * k / n)) / width for k in range(n+1)]
+
+def convolve(xs, ys, offset):
+	a = max(0, -offset)
+	b = min(len(ys), len(xs) - offset)
+	return sum(x*y for x,y in zip(xs[a+offset:b+offset], ys[a:b])) if a < b else 0
+
+def getts(data, width):
+	dt = 0.25 * width
+	n = int(math.ceil(data.duration() / dt))
+	return [k * dt for k in range(n)]
+
+def Abytime(freq, data, ts=None, width=0.25):
+	ts = ts or getts(data, width)
+	omega = -1j * tau * freq
+	zs = [a * cmath.exp(omega * t) for t, a in data.points()]
+	window = Hannwindow(width, data.fsample)
+	As = []
+	for t in ts:
+		offset = int(round(t * data.fsample)) - len(window) // 2
+		A, _ = cmath.polar(convolve(zs, window, offset))
+		As.append(A / (2 * width * data.fsample))
+	return As
 
 def Aspectrum(freq, data, nmax=None):
 	"""Amplitude spectrum, ie, amplitude at n freq for n = 1, 2, 3, ..."""
@@ -105,7 +151,14 @@ if __name__ == "__main__":
 	assert isnear(phi, phi0)
 	assert isnear(guessfundamental(data), freq)
 
-	print Aspectrum(freq, data)
+	f, h = 123.45, 0.001
+	A, dA = AdA(f, data)
+	dA0 = (Aphi(f + h, data)[0] - Aphi(f - h, data)[0]) / (2 * h)
+	assert isnear(dA, dA0)
+	exit()
+
+
+	print Abytime(freq, data)
 	exit()
 
 	fft = realfft(data)
