@@ -6,6 +6,8 @@ tau = 2 * math.pi
 REFERENCE_FREQ = 440  # frequency of the reference note in Hz
 MIDDLE_C_DELTA = -9  # number of half-steps that middle C is from the reference frequency
 
+DEFAULT_WIDTH = 0.25  # default width for time-varying window, in seconds
+
 class TimeSeries(list):
 	def __init__(self, *args, **kwargs):
 		self.fsample = kwargs.get("fsample")
@@ -114,12 +116,12 @@ def convolve(xs, ys, offset):
 	b = min(len(ys), len(xs) - offset)
 	return sum(x*y for x,y in zip(xs[a+offset:b+offset], ys[a:b])) if a < b else 0
 
-def getts(data, width):
+def getts(data, width=DEFAULT_WIDTH):
 	dt = 0.25 * width
 	n = int(math.ceil(data.duration() / dt))
 	return [k * dt for k in range(n)]
 
-def Abytime(freq, data, ts=None, width=0.25):
+def Abytime(freq, data, ts=None, width=DEFAULT_WIDTH):
 	ts = ts or getts(data, width)
 	omega = -1j * tau * freq
 	zs = [a * cmath.exp(omega * t) for t, a in data.points()]
@@ -130,6 +132,19 @@ def Abytime(freq, data, ts=None, width=0.25):
 		A, _ = cmath.polar(convolve(zs, window, offset))
 		As.append(A / (2 * width * data.fsample))
 	return As
+
+def Awindow(freq, data, t, width=DEFAULT_WIDTH):
+	return Abytime(freq, data, [t], width)[0]
+
+def freqAwindow(freq0, data, t, width=DEFAULT_WIDTH):
+	window = Hannwindow(width, data.fsample)
+	offset = int(round(t * data.fsample)) - len(window) // 2
+	wdata = [data[j] * w if 0 <= j < len(data) else 0 for j, w in enumerate(window, offset)]
+	wdata = TimeSeries(wdata, fsample=data.fsample)
+	freq = fitfrequency(freq0, wdata)
+	A, _ = Aphi(freq, wdata)
+	A0, _ = Aphi(freq0, wdata)
+	return freq, A, A0
 
 def Aspectrum(freq, data, nmax=None):
 	"""Amplitude spectrum, ie, amplitude at n freq for n = 1, 2, 3, ..."""

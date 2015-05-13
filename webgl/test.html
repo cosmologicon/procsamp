@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<body></body>
+<script>
+var util = {
+	// Create a canvas element with an associated webGL context and return the context.
+	// optionally set the width and height of the canvas in pixels.
+	getContext: function (width, height) {
+		var canvas = document.createElement("canvas")
+		document.body.appendChild(canvas)
+		var gl = canvas.getContext("webgl", {
+		})
+		if (!gl) throw "webgl context could not be initialized"
+		if (width) this.resize(gl, width, height)
+		return gl
+	},
+	// Resize the canvas of the given gl context to the given width and height.
+	resize: function (gl, width, height) {
+		gl.canvas.width = width
+		gl.canvas.height = height
+		gl.viewport(0, 0, width, height)
+	},
+	// Build a GL program from the given gl context, using the given source for the vertex and
+	// fragment shaders.
+	buildProgram: function (gl, vsource, fsource) {
+		var prog = gl.createProgram()
+		var vshader = gl.createShader(gl.VERTEX_SHADER)
+		gl.shaderSource(vshader, vsource)
+		gl.compileShader(vshader)
+		if (!gl.getShaderParameter(vshader, gl.COMPILE_STATUS)) {
+			throw "Error compiling vertex shader:\n" + gl.getShaderInfoLog(vshader)
+		}
+		gl.attachShader(prog, vshader)
+		var fshader = gl.createShader(gl.FRAGMENT_SHADER)
+		gl.shaderSource(fshader, fsource)
+		gl.compileShader(fshader)
+		if (!gl.getShaderParameter(fshader, gl.COMPILE_STATUS)) {
+			throw "Error compiling fragment shader:\n" + gl.getShaderInfoLog(fshader)
+		}
+		gl.attachShader(prog, fshader)
+		gl.linkProgram(prog)
+		if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+			throw "Error linking program:\n" + gl.getProgramInfoLog(prog)
+		}
+		gl.validateProgram(prog)
+		return prog
+	},
+}
+</script>
+<script type="x-shader/x-vertex" id="vchunk">
+const float K = float($K$);
+void main() {
+	gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+	gl_PointSize = K;
+}
+</script>
+<script type="x-shader/x-vertex" id="fdump">
+precision highp float;
+uniform sampler2D sampler;
+const float K = float($K$);
+void main() {
+	gl_FragColor = texture2D(sampler, gl_FragCoord.xy / K);
+	gl_FragColor.a = 1.0;
+}
+</script>
+<script type="x-shader/x-fragment" id="fchunk">
+precision highp float;
+precision highp int;
+uniform sampler2D rawscape;
+uniform int jchunk0;
+const float tau = 6.283185307179586;
+const int C = $C$;
+const float K = float($K$);
+const float R = float($R$);
+const float F = float($F$);
+const float chunks_per_row = R / float(C);
+const float fmin = 20.0, fmax = 2000.0;
+void main() {
+	float jchunk = float(jchunk0) + gl_FragCoord.x;
+	vec2 rp0;
+	rp0.y = floor(jchunk / chunks_per_row);
+	rp0.x = (jchunk - rp0.y * chunks_per_row) * float(C);
+	rp0 /= R;
+
+	// Frequency in cycles per second
+	float f = floor(exp(log(fmin) + (log(fmax) - log(fmin)) * gl_FragCoord.y / K));
+	// Cycles per sample
+	float da = f / F;
+	// Cycle phase at start of chunk
+	float a0 = mod(jchunk * float(C) * da, 1.0);
+
+	vec2 z;
+	for (int i = 0; i < C; ++i) {
+		vec2 rp = rp0 + vec2(float(i) / R, 0.0);
+		rp.x = clamp(rp.x, 0.1, 0.9);
+		rp.y = clamp(rp.y, 0.1, 0.9);
+		float f = (texture2D(rawscape, rp).r - 127.0 / 255.0) * 2.0;
+//		f *= 5.0;
+		float phi = (a0 + da * float(i)) * tau;
+		z += vec2(f * cos(phi), f * sin(phi));
+	}
+	z /= float(C);
+	gl_FragColor = vec4(0.5 + 0.5 * z.xy, 0.0, 1.0);
+}
+</script>
+<script type="x-shader/x-vertex" id="vspec">
+const float K = float($K$);
+void main() {
+	gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+	gl_PointSize = K;
+}
+</script>
+<script type="x-shader/x-fragment" id="fspec">
+precision highp float;
+precision highp int;
+uniform sampler2D chunkscape;
+uniform int jslice0;  // slice number at gl_FragCoord.x = 0
+uniform vec2 view0;
+const float K = float($K$);
+const float P = float($P$);
+const int W = $W$;
+void main() {
+	float jslice = float(jslice0) + gl_FragCoord.x - view0.x;
+	vec2 cp0 = gl_FragCoord.xy - view0;
+	cp0.x *= P;
+	cp0 /= K;
+	vec2 z = vec2(0.0, 0.0);
+	float fsum = 0.0;
+	for (int i = 0; i < W; ++i) {
+		vec2 cp = cp0 + vec2(float(i) / K, 0.0);
+		vec2 zchunk = (texture2D(chunkscape, cp).rg - 127.5 / 255.0) * 2.0;
+		float g = (float(i) + 0.5) / float(W);
+		float f = g * (1.0 - g);
+//		f = 1.0;
+		fsum += f;
+		z += f * zchunk;
+	}
+	z /= fsum;
+	float a = clamp(log(length(z)) * 0.25 + 1.0, 0.0, 1.0);
+	gl_FragColor = vec4(vec3(a), 1.0);
+//	gl_FragColor.rg = cp0;
+//	gl_FragColor.rgb = z.xxx * 10.0 * 0.5 + 0.5;
+}
+</script>
+
+<script>
+var tau = 6.283185307179586
+
+var F = 1 << 14  // samples per second of audio
+var C = 1 << 6  // samples per chunk - must divide R
+var L = 1 << 4  // slices per second
+var R = 1 << 8  // size of the rawscape in pixels
+var K = 1 << 8  // size of the chunkscape in pixels
+
+var P = F / (L * C)  // chunks per slice
+var W = P * 6  // chunks per window
+
+var V = Math.floor((K - W) / P) + 1  // slices per box
+
+
+function sreplace(source) {
+	var values = { F: F, C: C, L: L, R: R, K: K, P: P, W: W }
+	for (var v in values) source = source.replace("$"+v+"$", ""+values[v])
+	return source
+}
+
+var acontext = new AudioContext()
+var gl = util.getContext(1024, K)
+gl.disable(gl.DEPTH_TEST)
+var chunkprog = util.buildProgram(gl, sreplace(vchunk.text), sreplace(fchunk.text))
+var specprog = util.buildProgram(gl, sreplace(vspec.text), sreplace(fspec.text))
+var dumpprog = util.buildProgram(gl, sreplace(vchunk.text), sreplace(fdump.text))
+var rawscapesampler = gl.getUniformLocation(chunkprog, "rawscape")
+var jchunk0 = gl.getUniformLocation(chunkprog, "jchunk0")
+var chunkscapesampler = gl.getUniformLocation(specprog, "chunkscape")
+var jslice0 = gl.getUniformLocation(specprog, "jslice0")
+var view0 = gl.getUniformLocation(specprog, "view0")
+var dumpsampler = gl.getUniformLocation(dumpprog, "sampler")
+
+var rawscape = gl.createTexture()
+gl.bindTexture(gl.TEXTURE_2D, rawscape)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+
+var chunkscape = gl.createTexture()
+gl.bindTexture(gl.TEXTURE_2D, chunkscape)
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, K, K, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+
+var chunkfbo = gl.createFramebuffer()
+var rawdata = []
+
+
+function loadraw(jbox) {
+	var sample0 = jbox * V * P * C
+	var subdata = rawdata.subarray(sample0, sample0 + R * R)
+	gl.activeTexture(gl.TEXTURE0)
+	gl.bindTexture(gl.TEXTURE_2D, rawscape)
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, R, R, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, subdata)
+}
+function dump(sampler) {
+	gl.viewport(0, 0, K, K)
+	gl.clear(gl.COLOR_BUFFER_BIT)
+	gl.useProgram(dumpprog)
+	gl.uniform1i(dumpsampler, sampler)
+	gl.drawArrays(gl.POINTS, 0, 1)
+}
+function renderchunkstoscreen() {
+	gl.viewport(0, 0, K, K)
+	gl.clear(gl.COLOR_BUFFER_BIT)
+	gl.useProgram(chunkprog)
+	gl.activeTexture(gl.TEXTURE0)
+	gl.bindTexture(gl.TEXTURE_2D, rawscape)
+	gl.uniform1i(rawscapesampler, 0)
+	gl.uniform1i(jchunk0, 0)
+	gl.drawArrays(gl.POINTS, 0, 1)
+}
+function renderchunks() {
+	gl.bindFramebuffer(gl.FRAMEBUFFER, chunkfbo)
+	gl.bindTexture(gl.TEXTURE_2D, chunkscape)
+	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, chunkscape, 0)
+	renderchunkstoscreen()
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+}
+function renderspec(jbox) {
+	gl.useProgram(specprog)
+	gl.activeTexture(gl.TEXTURE1)
+	gl.bindTexture(gl.TEXTURE_2D, chunkscape)
+	gl.uniform1i(chunkscapesampler, 1)
+	gl.uniform1i(jslice0, 0)
+	gl.uniform2fv(view0, [jbox * V, 0])
+	gl.viewport(jbox * V, 0, V, K)
+	gl.scissor(jbox * V, 0, V, K)
+	gl.enable(gl.SCISSOR_TEST)
+	gl.drawArrays(gl.POINTS, 0, 1)
+	gl.disable(gl.SCISSOR_TEST)
+}
+function drawbox(jbox) {
+	loadraw(jbox)
+	renderchunks()
+	renderspec(jbox)
+}
+
+var bar = document.createElement("canvas")
+bar.width = gl.canvas.width ; bar.height = 20
+document.body.appendChild(document.createElement("p"))
+document.body.appendChild(bar)
+var barcontext = bar.getContext("2d")
+function updatebar () {
+	barcontext.fillStyle = "black"
+	barcontext.fillRect(0, 0, bar.width, bar.height)
+	var x = (acontext.currentTime - tsource0) * L
+	barcontext.beginPath()
+	barcontext.moveTo(x, 0)
+	barcontext.lineTo(x, bar.height)
+	barcontext.strokeStyle = "red"
+	barcontext.stroke()
+}
+
+
+var request = new XMLHttpRequest()
+request.open("GET", "learntofly.mp3", true)
+request.responseType = "arraybuffer"
+request.onload = function () {
+	acontext.decodeAudioData(request.response, function (buffer) {
+		var channeldata = []
+		for (var i = 0 ; i < buffer.numberOfChannels ; ++i) {
+			channeldata.push(buffer.getChannelData(i))
+		}
+		var rawlength = Math.floor(channeldata[0].length * F / buffer.sampleRate)
+		rawdata = new Uint8Array(rawlength)
+		for (var j = 0 ; j < rawlength ; ++j) {
+			var k = Math.floor(j * buffer.sampleRate / F)
+			var f = (channeldata[0][k] + channeldata[1][k]) / 2
+/*
+			f = 0.3 * Math.sin(j * (100 / F) * tau) +
+				0.3 * Math.sin(j * (140 / F) * tau) +
+				0.3 * Math.sin(j * (200 / F) * tau)
+			if (j > 3 * F) f = 0
+*/
+			rawdata[j] = 127.5 * (1 + f)
+		}
+//		drawbox(0)
+		for (var jbox = 0 ; jbox < 100 ; ++jbox) {
+			drawbox(jbox)
+		}
+//		loadraw(0)
+//		dump(0)
+//		renderchunkstoscreen()
+//		renderchunks()
+//		gl.activeTexture(gl.TEXTURE1) ; gl.bindTexture(gl.TEXTURE_2D, chunkscape) ; dump(1)
+//		renderspec(0)
+		source = acontext.createBufferSource()
+		source.buffer = buffer
+		source.connect(acontext.destination)
+		source.start(0)
+		tsource0 = acontext.currentTime
+		setInterval(updatebar, 20)
+	})
+}
+request.send()
+
+</script>

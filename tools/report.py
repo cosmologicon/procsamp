@@ -13,6 +13,11 @@ freq = 4 * freq0
 freq = util.fitfrequency(freq, data)
 #print freq, util.tocents(freq)
 #print nfreq, util.tocents(nfreq)
+for t in util.getts(data, width=0.05):
+	f, A, A0 = util.freqAwindow(freq, data, t)
+	print t, f, util.tocents(f), A, A0
+exit()
+
 freqs = [freq * math.exp(d) for d in (-0.05,-0.03,-0.01,0,0.01,0.03,0.05)]
 for freq in freqs:
 	print freq, util.Aphi(freq, data), util.AdA(freq, data)
