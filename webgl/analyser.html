@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<title>AnalyserNode spectrogram</title>
+<body>
+<div id=drop style="background: yellow; width: 160px; height: 160px">Drop here</div>
+<p><canvas id=oscope></canvas>
+<p><canvas id=spec></canvas>
+</body>
+<script>
+oscope.width = 512 ; oscope.height = 120
+spec.width = 1000 ; spec.height = 256
+var ocontext = oscope.getContext("2d")
+var scontext = spec.getContext("2d")
+var acontext = new AudioContext()
+
+function cancel(e) {
+	e.preventDefault()
+	return false
+}
+
+drop.addEventListener("dragover", cancel, false)
+drop.addEventListener("dragenter", cancel, false)
+drop.addEventListener("drop", function (e) {
+	var dt = e.dataTransfer
+	if (!dt.files.length == 1) throw "drag 1 file please"
+	var reader = new FileReader()
+	reader.addEventListener("load", function (event) {
+		acontext.decodeAudioData(event.target.result, function (buffer) {
+			analyser = acontext.createAnalyser()
+			analyser.fftSize = 2048
+			adata = new Float32Array(analyser.frequencyBinCount)
+
+			source = acontext.createBufferSource()
+			source.buffer = buffer
+			source.connect(analyser)
+			analyser.connect(acontext.destination)
+
+			scontext.fillStyle = "black"
+			scontext.fillRect(0, 0, spec.width, spec.height)
+			scopex = -1 ; scopet0 = acontext.currentTime
+			playing = true
+			source.onended = function (event) { playing = false }
+			source.start(0)
+			draw()
+		})
+	}, false)
+	reader.readAsArrayBuffer(dt.files[0])
+	return cancel(e)
+}, false)
+
+function draw() {
+	if (playing) requestAnimationFrame(draw)
+	analyser.getFloatFrequencyData(adata)
+	ocontext.fillStyle = "black"
+	ocontext.fillRect(0, 0, oscope.width, oscope.height)
+	ocontext.beginPath()
+	for (var j = 0 ; j < adata.length ; ++j) {
+		var y = Math.floor(Math.max(0, 100 + adata[j]))
+		ocontext.moveTo(j, oscope.height)
+		ocontext.lineTo(j, oscope.height - y)
+	}
+	ocontext.strokeStyle = "white"
+	ocontext.lineWidth = 1
+	ocontext.stroke()
+
+	var dt = Math.floor((acontext.currentTime - scopet0) / 0.1)
+	if (dt > scopex) {
+		scopex = dt
+		var idata = scontext.createImageData(1, spec.height)
+		var total = 0
+		for (var j = spec.height - 1, k = 0 ; j >= 0 ; --j) {
+			var a = Math.floor(Math.min(Math.max(100 + adata[j], 0), 255))
+			idata.data[k++] = a
+			idata.data[k++] = a
+			idata.data[k++] = a
+			idata.data[k++] = 255
+			total += a
+		}
+		scontext.putImageData(idata, scopex, 0)
+		var y = Math.floor(3 * total / spec.height)
+		scontext.fillStyle = "red"
+		scontext.fillRect(scopex, 120 - y, 1, 1)
+	}
+}
+
+</script>

@@ -73,7 +73,7 @@ const float K = float($K$);
 const float R = float($R$);
 const float F = float($F$);
 const float chunks_per_row = R / float(C);
-const float fmin = 20.0, fmax = 2000.0;
+const float fmin = 20.0, fmax = 2400.0;
 void main() {
 	float jchunk = float(jchunk0) + gl_FragCoord.x;
 	vec2 rp0;
@@ -83,16 +83,15 @@ void main() {
 
 	// Frequency in cycles per second
 	float f = floor(exp(log(fmin) + (log(fmax) - log(fmin)) * gl_FragCoord.y / K));
+//	float f = floor(fmin + (fmax - fmin) * gl_FragCoord.y / K);
 	// Cycles per sample
 	float da = f / F;
 	// Cycle phase at start of chunk
-	float a0 = mod(jchunk * float(C) * da, 1.0);
+	float a0 = mod(jchunk * mod(float(C) * da, 1.0), 1.0);
 
 	vec2 z;
 	for (int i = 0; i < C; ++i) {
 		vec2 rp = rp0 + vec2(float(i) / R, 0.0);
-		rp.x = clamp(rp.x, 0.1, 0.9);
-		rp.y = clamp(rp.y, 0.1, 0.9);
 		float f = (texture2D(rawscape, rp).r - 127.0 / 255.0) * 2.0;
 //		f *= 5.0;
 		float phi = (a0 + da * float(i)) * tau;
@@ -135,7 +134,7 @@ void main() {
 		z += f * zchunk;
 	}
 	z /= fsum;
-	float a = clamp(log(length(z)) * 0.25 + 1.0, 0.0, 1.0);
+	float a = clamp(log(length(z)) * 0.2 + 1.0, 0.0, 1.0);
 	gl_FragColor = vec4(vec3(a), 1.0);
 //	gl_FragColor.rg = cp0;
 //	gl_FragColor.rgb = z.xxx * 10.0 * 0.5 + 0.5;
@@ -245,6 +244,19 @@ function drawbox(jbox) {
 	renderspec(jbox)
 }
 
+var timers = {}
+function starttime(timername) {
+	timers[timername] = Date.now()
+//	console.log(timername + "...")
+}
+function stoptime(timername) {
+	if (timers[timername]) {
+		var dt = 0.001 * (Date.now() - timers[timername])
+		console.log("Done " + timername + " (" + dt.toFixed(3) + "s)")
+	}
+}
+
+
 var bar = document.createElement("canvas")
 bar.width = gl.canvas.width ; bar.height = 20
 document.body.appendChild(document.createElement("p"))
@@ -263,14 +275,16 @@ function updatebar () {
 
 
 var request = new XMLHttpRequest()
-request.open("GET", "learntofly.mp3", true)
+request.open("GET", "shortskirt.mp3", true)
 request.responseType = "arraybuffer"
 request.onload = function () {
 	acontext.decodeAudioData(request.response, function (buffer) {
+		stoptime("downloading audio")
 		var channeldata = []
 		for (var i = 0 ; i < buffer.numberOfChannels ; ++i) {
 			channeldata.push(buffer.getChannelData(i))
 		}
+		starttime("resampling")
 		var rawlength = Math.floor(channeldata[0].length * F / buffer.sampleRate)
 		rawdata = new Uint8Array(rawlength)
 		for (var j = 0 ; j < rawlength ; ++j) {
@@ -284,6 +298,8 @@ request.onload = function () {
 */
 			rawdata[j] = 127.5 * (1 + f)
 		}
+		stoptime("resampling")
+		starttime("rendering")
 //		drawbox(0)
 		for (var jbox = 0 ; jbox < 100 ; ++jbox) {
 			drawbox(jbox)
@@ -294,14 +310,23 @@ request.onload = function () {
 //		renderchunks()
 //		gl.activeTexture(gl.TEXTURE1) ; gl.bindTexture(gl.TEXTURE_2D, chunkscape) ; dump(1)
 //		renderspec(0)
+		stoptime("rendering")
+
+		starttime("back-sampling")
 		source = acontext.createBufferSource()
-		source.buffer = buffer
+		source.buffer = acontext.createBuffer(1, rawlength, F)
+		var backdata = source.buffer.getChannelData(0)
+		for (var j = 0 ; j < rawlength ; ++j) {
+			backdata[j] = rawdata[j] / 127.5 - 1.0
+		}
+		stoptime("back-sampling")
 		source.connect(acontext.destination)
 		source.start(0)
 		tsource0 = acontext.currentTime
 		setInterval(updatebar, 20)
 	})
 }
+starttime("downloading audio")
 request.send()
 
 </script>
