@@ -1,114 +1,107 @@
 <!DOCTYPE html>
 <title>Depict spectrogram of an audio file</title>
+<link href='http://fonts.googleapis.com/css?family=Bubblegum+Sans|VT323' rel='stylesheet' type='text/css'>
 <script src=UFXgl.js></script>
 <script src=UFXmaximize.js></script>
-<script type="x-shader/x-vertex" id="vfill">
-uniform highp vec2 viewportsize;
-void main() {
-	gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
-	gl_PointSize = max(viewportsize.x, viewportsize.y);
-}
-</script>
-<script type="x-shader/x-vertex" id="fdump">
-uniform sampler2D texture;
-uniform highp vec2 viewportsize;
-void main() {
-	gl_FragColor = vec4(texture2D(texture, gl_FragCoord.xy / viewportsize).rgb, 1.0);
-}
-</script>
-<script type="x-shader/x-vertex" id="fchunk">
-precision highp float;
-uniform sampler2D rawscape;
-uniform vec2 viewportsize, rawscapesize;
-uniform float hmin, hmax;
-uniform float F;
-const float tau = 6.283185307179586;
-
-const int C = 128;
-
-float blackman(in float g) {
-	return 21.0 - 25.0 * cos(tau * g) + 4.0 * cos(2.0 * tau * g);
-}
-float wmax = blackman(0.5);
-
-vec2 toshort(in float x) {
-	x = clamp(floor((x + 1.0) / 2.0 * 65535.0), 0.0, 65535.0);
-	float a = floor(x / 256.0);
-	return vec2(x - 256.0 * a, a) / 255.0;
-}
-
-void main() {
-	float h = hmin + (hmax - hmin) * gl_FragCoord.y / viewportsize.y;
-	float f = 440.0 * exp(h * log(2.0) / 12.0);
-	float jchunk = gl_FragCoord.x;
-	float W = viewportsize.x * viewportsize.y;
-	vec2 z;
-	for (int i = 0; i < C; ++i) {
-		float m = float(i) + float(C) * jchunk;
-		float w = blackman((m + 1.0) / (W + 1.0));
-		vec2 rpos = vec2(float(i), jchunk) / rawscapesize;
-		float v = texture2D(rawscape, rpos).r * 2.0 - 1.0;
-		float phi = m * f / F * tau;
-		z.x += v * w * cos(phi);
-		z.y += v * w * sin(phi);
-	}
-	z /= float(C) * wmax;
-	gl_FragColor.rg = toshort(z.x);
-	gl_FragColor.ba = toshort(z.y);
-}
-</script>
-<script type="x-shader/x-vertex" id="fspec">
-precision highp float;
-uniform sampler2D chunkscape;
-uniform vec2 viewportsize, chunkscapesize;
-
-const int P = 128;
-
-float fromshort(in vec2 a) {
-	float x = 255.0 * (a.x + 256.0 * a.y);
-	return (x / 65535.0) * 2.0 - 1.0;
-}
-
-void main() {
-	float y = gl_FragCoord.y;
-	vec2 z;
-	for (int i = 0; i < P; ++i) {
-		vec2 cpos = vec2(float(i), y) / chunkscapesize;
-		vec4 s = texture2D(chunkscape, cpos);
-		z.x += fromshort(s.rg);
-		z.y += fromshort(s.ba);
-	}
-	z /= float(P);
-	float a = length(z);
-	a = log(a) * 0.2 + 1.0;
-	gl_FragColor = vec4(vec3(a), 1.0);
-}
-</script>
-<script src=util.js></script>
+<script src=UFXdraw.js></script>
+<script src=UFXresource.js></script>
+<script src=UFXmouse.js></script>
 <body>
-<canvas id=canvas></canvas>
 </body>
+<style>
+body {
+	background: black;
+}
+</style>
+<script src=info.js></script>
+<script src=spec.js></script>
 <script>
-init()
-//UFX.maximize.fill(canvas, "total")
-UFX.maximize.onadjust = function (x, y) {
-	gl.resize(x, y)
-	gl.clearColor(0.1, 0.1, 0.1, 1)
-	gl.clear(gl.COLOR_BUFFER_BIT)
+var catcher = new FileCatcher()
+var audiopter = new Audiopter()
+var spectropter = null
+catcher.oncatch = function (file) {
+	audiopter.upload(file)
 }
-gl.clearColor(0.1, 0.1, 0.1, 1)
-gl.clear(gl.COLOR_BUFFER_BIT)
+var pcanvas = null
+audiopter.onready = function () {
+	spectropter = new Spectropter(audiopter)
+	audiopter.play()
+}
+UFX.mouse.init(canvas2d)
+function think() {
+	raftoken = requestAnimationFrame(think)
+	var mstate = UFX.mouse.state()
+	info.think()
+	UFX.draw("c0")
+	catcher.draw()
+	if (pcanvas) UFX.draw("drawimage0", pcanvas)
+	if (spectropter) {
+		spectropter.killtime(0.05)
+		if (audiopter.source) {
+			var b = 20
+			var x = b, w = Math.round(canvas2d.width * 0.5) - 2 * b
+			var h = Math.round(canvas2d.height * 0.7) - 2 * b, y = b
+			UFX.draw("fs #007 fr", x - 2, y - 2, w + 4, h + 4)
+			spectropter.fillRectZoom(x, y, w, h, audiopter.currentTime(), 0.15 * w)
+			function drawhline(f, color, text) {
+				if (f <= 0 || f >= 1) return
+				var py = y + h - h * f
+				UFX.draw("b m", x, py, "l", x+w, py, "ss", color, "lw 1 s")
+				if (text) {
+					UFX.draw("[ t", x + w - 2, py, "fs", color, "tab right bottom",
+						"fs", color, "ft0", text, "]")
+				}
+			}
+			UFX.draw("font 18px~'VT323'")
+			for (var octave = 0 ; octave < 10 ; ++octave) {
+				var hA = -48 + 12 * octave
+				drawhline((hA - hmin) / (hmax - hmin), "#00F", "A" + octave)
+				var hDs = -54 + 12 * octave
+				drawhline((hDs - hmin) / (hmax - hmin), "#007", "D#" + octave)
+			}
+			UFX.draw("b m", x+w/2, y, "l", x+w/2, y+h, "ss cyan lw 1 s")
+		}
 
-function cancel(e) {
-	e.preventDefault()
-	return false
+		var b = 20
+		var x = b, w = canvas2d.width - 2 * b
+		var h = Math.round(canvas2d.height * 0.2), y = canvas2d.height - h - b
+		UFX.draw("fs #007 fr", x - 2, y - 2, w + 4, h + 4)
+		spectropter.fillRect(x, y, w, h)
+		function drawline(f, color, text) {
+			var px = x + w * f
+			UFX.draw("b m", px, y, "l", px, y+h, "ss", color, "lw 1 s")
+			if (text) {
+				UFX.draw("[ t", px, y - 4, "fs", color, "tab center bottom",
+					"fs", color, "ft0", text, "]")
+			}
+		}
+		UFX.draw("font 18px~'VT323'")
+		var t = audiopter.t
+		var dt = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 30, 60].filter(function (dt) {
+			return w * dt / t > 50
+		})[0]
+		for (var a = 1 ; a * dt < t ; ++a) {
+			drawline(a * dt / t, "#007", (a * dt).toFixed(dt < 1 ? 1 : 0) + "s")
+		}
+		if (audiopter.source && audiopter.currentFraction() < 1) {
+			drawline(audiopter.currentFraction(), "cyan")
+		}
+		if (mstate.left.down) {
+			var mx = mstate.pos[0], my = mstate.pos[1]
+			if (x <= mx && mx <= x + w && y <= my && my <= y + h) {
+				audiopter.play(audiopter.t * (mx - x) / w)
+			}
+		}
+	}
 }
-canvas.addEventListener("dragover", cancel, false)
-canvas.addEventListener("dragenter", cancel, false)
-canvas.addEventListener("drop", function (e) {
-	handleupload(e.dataTransfer)
-	return cancel(e)
-}, false)
+
+UFX.resource.onload = function () {
+	think()
+}
+UFX.resource.load({
+	shaders: "spec.shader",
+})
+
 
 </script>
 
