@@ -26,11 +26,10 @@ if (acontext) {
 
 var canvas2d = document.createElement("canvas")
 var context2d = canvas2d.getContext("2d")
-
 document.body.appendChild(canvas2d)
 UFX.draw.setcontext(context2d)
 UFX.maximize.onadjust = function (canvas, x, y) {
-	var b = 10, h = Math.round(0.7 * y), w = Math.round(0.5 * x)
+	var b = 20, h = Math.round(0.6 * y), w = Math.round(0.5 * x)
 	info.position(x - w + b, b, w - 2 * b, h - 2 * b)
 }
 UFX.maximize.fill(canvas2d, "total")
@@ -38,9 +37,17 @@ UFX.maximize.fill(canvas2d, "total")
 window.onerror = function (error, url, line) {
     document.body.innerHTML = "<p>Error in: "+url+"<p>line "+line+"<pre>"+error+"</pre>"
 }
+// adds the given event handler and returns a function to remove the event listener.
+function addhandler(obj, eventname, handler, capture) {
+	capture = capture || false
+	obj.addEventListener(eventname, handler, capture)
+	return function () {
+		obj.removeEventListener(eventname, handler, capture)
+	}
+}
 
-var shaders = {}
 function loadshaders(shadertext, audiopter) {
+	var shaders = {}
 	var shader
 	shadertext.split("\n").forEach(function (line) {
 		if (line.indexOf(">>>") == 0) {
@@ -122,25 +129,42 @@ Scape.prototype = {
 		gl.bindFramebuffer(gl.FRAMEBUFFER, null)
 		gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
 	},
+	destroy: function () {
+		gl.deleteTexture(this.texture)
+		gl.deleteFramebuffer(this.fbo)
+	},
 }
 
 
 // FBOs, textures, and programs related to rendering the spectrogram
-function Spectropter(audiopter) {
-	this.audiopter = audiopter
-	loadshaders(UFX.resource.data.shaders, audiopter)
-	this.rawtexture = makedatatexture(audiopter.C, audiopter.P, gl.LUMINANCE)
-	this.chunkscape = new Scape(audiopter.P, num_frequencies)
-	this.specscape = new Scape(64, num_frequencies)
-	this.nslice = Math.ceil(audiopter.t * slices_per_second)
-	this.jslice = 0
-	this.jslice0 = 0
-	this.extracts = []
-	this.done = false
-	info.progress("Generating spectrogram")
+function Spectropter() {
+	this.started = false
 }
 Spectropter.prototype = {
+	init: function (audiopter) {
+		if (this.started) this.reset()
+		this.audiopter = audiopter
+		loadshaders(UFX.resource.data.shaders, audiopter)
+		this.rawtexture = makedatatexture(audiopter.C, audiopter.P, gl.LUMINANCE)
+		this.chunkscape = new Scape(audiopter.P, num_frequencies)
+		this.specscape = new Scape(64, num_frequencies)
+		this.nslice = Math.ceil(audiopter.t * slices_per_second)
+		this.jslice = 0
+		this.jslice0 = 0
+		this.extracts = []
+		this.started = true
+		this.done = false
+		info.progress("Generating spectrogram")
+	},
+	reset: function () {
+		this.started = false
+		gl.deleteTexture(this.rawtexture)
+		this.chunkscape.destroy()
+		this.specscape.destroy()
+		delete this.extracts
+	},
 	killtime: function (dt) {
+		if (this.done) return
 		var end = Date.now() + 1000 * (dt || 0)
 		while (!this.done && Date.now() <= end) {
 			if (this.jslice == this.specscape.w) {
@@ -272,17 +296,28 @@ function dumptexture(texture) {
 //   F: sample rate of uarray
 //   N: number of usamples (counting the bookends)
 function Audiopter() {
-	this.ready = false
+	this.started = false
+	this.hremove = {}
 }
 Audiopter.prototype = {
-	onready: function () {
+	ondone: function () {
 	},
 	upload: function (file) {
+		if (this.started) {
+			this.stop()
+			this.clearhandlers()
+		}
 		var reader = new FileReader()
 		info.progress("Uploading file")
-		reader.addEventListener("progress", this.onreaderprogress.bind(this), false)
-		reader.addEventListener("load", this.onreaderload.bind(this), false)
+		this.hremove.progress = addhandler(reader, "progress", this.onreaderprogress.bind(this))
+		this.hremove.load = addhandler(reader, "load", this.onreaderload.bind(this))
 		reader.readAsArrayBuffer(file)
+		this.started = true
+		this.done = false
+	},
+	clearhandlers: function () {
+		for (var s in this.hremove) this.hremove[s]()
+		this.hremove = {}
 	},
 	onreaderprogress: function (event, filename) {
 		if (event.lengthComputable) {
@@ -291,6 +326,7 @@ Audiopter.prototype = {
 		}
 	},
 	onreaderload: function (event) {
+		this.clearhandlers()
 		info.progress("Uploading file", 1)
 		info.progress("Decoding audio")
 		acontext.decodeAudioData(event.target.result, this.handledecode.bind(this))
@@ -306,14 +342,15 @@ Audiopter.prototype = {
 		info.info("Audio sample rate: " + Math.round(this.F0) + "Hz")
 		info.info("Audio duration: " + this.t.toFixed(1) + "s")
 		info.progress("Resampling audio")
+		this.tstop = 0
 		setTimeout(this.resample.bind(this), 10)
 	},
 	resample: function () {
 		this.array0 = mergechannels(this.buffer0)
 		this.makeuarray()
 		info.progress("Resampling audio", 1)
-		this.ready = true
-		this.onready()
+		this.done = true
+		this.ondone()
 	},
 	setW: function () {
 		var Wbase = this.F * seconds_per_window
@@ -348,25 +385,29 @@ Audiopter.prototype = {
 		j0 = j0 < 0 ? 0 : j0 >= this.N - this.W ? this.N - this.W - 1 : j0
 		return this.uarray.subarray(j0, j0 + this.W)
 	},
-	play: function (t) {
-		t = t || 0
+	settime: function (t) {
+		this.tstop = t
+	},
+	play: function () {
 		if (this.source) this.stop()
 		this.source = acontext.createBufferSource()
 		this.source.buffer = this.buffer0
 		this.source.connect(acontext.destination)
-		this.source.start(0, t)
-		this.tstart = acontext.currentTime - t
+		this.source.start(0, this.tstop)
+		this.tstart = acontext.currentTime - this.tstop
 	},
 	stop: function () {
+		if (!this.source) return
 		this.source.stop()
 		this.source.disconnect()
+		this.tstop = this.currentTime()
+		delete this.source
 	},
 	currentTime: function () {
-		if (!this.source) return null
+		if (!this.source) return this.tstop
 		return acontext.currentTime - this.tstart
 	},
 	currentFraction: function () {
-		if (!this.source) return null
 		return this.currentTime() / this.t
 	},
 }
@@ -377,20 +418,36 @@ function FileCatcher() {
 	canvas2d.addEventListener("dragenter", this.ondragenter.bind(this), false)
 	canvas2d.addEventListener("dragleave", this.ondragleave.bind(this), false)
 	canvas2d.addEventListener("drop", this.ondrop.bind(this))
+	this.input = document.createElement("input")
+	this.input.type = "file"
+	this.input.style.position = "absolute"
+	this.input.style.border = "none"
+	this.input.style.padding = 0
+	this.input.style.opacity = 0
+	this.input.style.fontSize = "1px"
+	this.input.addEventListener("change", this.onselect.bind(this), false)
+	document.body.appendChild(this.input)
 }
 FileCatcher.prototype = {
 	oncatch: function (file) {
+	},
+	position: function (x, y, w, h) {
+		this.input.style.left = x + "px"
+		this.input.style.top = y + "px"
+		this.input.style.width = w + "px"
+		this.input.style.height = h + "px"
 	},
 	reset: function () {
 		this.caught = false
 		this.focused = false
 	},
 	draw: function () {
-		if (this.caught) return
+		if (!this.focused) return
 		var color = this.focused ? "white" : "#666"
+		var h = Math.round(canvas2d.width / 14)
 		UFX.draw("[ alpha 0.15 fs", color, "f0",
 			"alpha 0.6 t", canvas2d.width/2, canvas2d.height/2,
-			"font 80px~'Bubblegum~Sans'",
+			"font", h + "px~'Bubblegum~Sans'",
 			"fs black sh white -2 -2 0 tab center middle",
 			"ft0 Drop~audio~file ]")
 	},
@@ -399,14 +456,24 @@ FileCatcher.prototype = {
 		return false
 	},
 	ondrop: function (event) {
-		var files = event.dataTransfer.files
+		this.onopen(event.dataTransfer.files)
+		return this.cancel(event)
+	},
+	onselect: function (event) {
+		this.onopen(event.target.files)
+		return this.cancel(event)
+	},
+	onopen: function (files) {
 		if (files.length != 1) {
 			info.error("Please upload exactly 1 file.")
 			return this.cancel(event)
 		}
+		info.clear()
+		this.focused = false
 		this.caught = true
+		spectropter.started = false
+		info.info("File name: " + files[0].name)
 		this.oncatch(files[0])
-		return this.cancel(event)
 	},
 	ondragover: function (event) {
 		return this.cancel(event)
